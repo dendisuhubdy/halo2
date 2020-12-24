@@ -151,6 +151,7 @@ impl<F: FieldExt> MockProver<F> {
             // We iterate from n..2n so we can just reduce to handle wrapping.
             for row in n..(2 * n) {
                 if gate.evaluate(
+                    &|| F::one(),
                     &|index| {
                         let (column, at) = self.cs.fixed_queries[index];
                         let resolved_row = (row + at.0) % n;
