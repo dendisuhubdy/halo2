@@ -7,9 +7,11 @@ use crate::{
     plonk::{ConstraintSystem, Error},
 };
 
+pub(crate) mod gates;
 mod message_scheduler;
 mod spread_table;
 
+use gates::*;
 use message_scheduler::*;
 use spread_table::*;
 

@@ -1,8 +1,8 @@
 use std::convert::TryInto;
 
 use super::{
-    super::BLOCK_SIZE, get_tag, interleave_u16_with_zeros, BlockWord, SpreadInputs, SpreadVar,
-    Table16Chip, ROUNDS,
+    super::BLOCK_SIZE, get_tag, interleave_u16_with_zeros, BlockWord, Gate, SpreadInputs,
+    SpreadVar, Table16Chip, ROUNDS,
 };
 use crate::{
     arithmetic::FieldExt,
@@ -41,6 +41,20 @@ pub(super) struct MessageScheduler {
     s_decompose_2: Column<Fixed>,
     /// Decomposition gate for W_[49..62]
     s_decompose_3: Column<Fixed>,
+    /// sigma_0 gate for W_[1..14]
+    s_lower_sigma_0: Column<Fixed>,
+    /// sigma_1 gate for W_[49..62]
+    s_lower_sigma_1: Column<Fixed>,
+    /// sigma_0_v2 gate for W_[14..49]
+    s_lower_sigma_0_v2: Column<Fixed>,
+    /// sigma_1_v2 gate for W_[14..49]
+    s_lower_sigma_1_v2: Column<Fixed>,
+    /// Reduce output from each of the sigma gates
+    s_reduce: Column<Fixed>,
+    /// Range check and bit spread check on two 2-bit words
+    s22: Column<Fixed>,
+    /// Range check and bit spread check on a 2-bit words followed by a 3-bit word
+    s23: Column<Fixed>,
 }
 
 impl MessageScheduler {
@@ -65,6 +79,11 @@ impl MessageScheduler {
         let s_decompose_1 = meta.fixed_column();
         let s_decompose_2 = meta.fixed_column();
         let s_decompose_3 = meta.fixed_column();
+        let s_lower_sigma_0 = meta.fixed_column();
+        let s_lower_sigma_1 = meta.fixed_column();
+        let s_lower_sigma_0_v2 = meta.fixed_column();
+        let s_lower_sigma_1_v2 = meta.fixed_column();
+        let s_reduce = meta.fixed_column();
         let s22 = meta.fixed_column();
         let s23 = meta.fixed_column();
 
@@ -80,7 +99,182 @@ impl MessageScheduler {
         let a_8 = extras[4];
         let a_9 = extras[5];
 
-        // meta.create_gate(|meta| {});
+        // s_decompose_0 for all words
+        meta.create_gate(|meta| {
+            let s_decompose_0 = meta.query_fixed(s_decompose_0, 0);
+            let lo = meta.query_advice(a_3, 0);
+            let hi = meta.query_advice(a_4, 0);
+            let word = meta.query_advice(a_5, 0);
+
+            Gate::s_decompose_0(s_decompose_0, lo, hi, word).0
+        });
+
+        // s_decompose_1 for W_1 to W_13
+        // (3, 4, 11, 14)-bit chunks
+        meta.create_gate(|meta| {
+            let s_decompose_1 = meta.query_fixed(s_decompose_1, 0);
+            let a = meta.query_advice(a_3, 1); // 3-bit chunk
+            let b = meta.query_advice(a_4, 1); // 4-bit chunk
+            let c = meta.query_advice(a_1, 1); // 11-bit chunk
+            let d = meta.query_advice(a_1, 0); // 14-bit chunk
+            let word = meta.query_advice(a_5, 0);
+
+            Gate::s_decompose_1(s_decompose_1, a, b, c, d, word).0
+        });
+
+        // s_decompose_2 for W_14 to W_48
+        // (3, 4, 3, 7, 1, 1, 13)-bit chunks
+        meta.create_gate(|meta| {
+            let s_decompose_2 = meta.query_fixed(s_decompose_2, 0);
+            let a = meta.query_advice(a_3, -1); // 3-bit chunk
+            let b = meta.query_advice(a_1, 1); // 4-bit chunk
+            let c = meta.query_advice(a_4, -1); // 3-bit chunk
+            let d = meta.query_advice(a_1, 0); // 7-bit chunk
+            let e = meta.query_advice(a_3, 1); // 1-bit chunk
+            let f = meta.query_advice(a_4, 1); // 1-bit chunk
+            let g = meta.query_advice(a_1, -1); // 13-bit chunk
+            let word = meta.query_advice(a_5, 0);
+
+            Gate::s_decompose_2(s_decompose_2, a, b, c, d, e, f, g, word).0
+        });
+
+        // s_decompose_3 for W_49 to W_61
+        // (10, 7, 2, 13)-bit chunks
+        meta.create_gate(|meta| {
+            let s_decompose_3 = meta.query_fixed(s_decompose_3, 0);
+            let a = meta.query_advice(a_3, 1); // 10-bit chunk
+            let b = meta.query_advice(a_4, 1); // 7-bit chunk
+            let c = meta.query_advice(a_1, 1); // 2-bit chunk
+            let d = meta.query_advice(a_1, 0); // 13-bit chunk
+            let word = meta.query_advice(a_5, 0);
+
+            Gate::s_decompose_3(s_decompose_3, a, b, c, d, word).0
+        });
+
+        // s_word for W_16 to W_63
+        meta.create_gate(|meta| {
+            let s_word = meta.query_fixed(s_word, 0);
+
+            let sigma_0_lo = meta.query_advice(a_6, -1);
+            let sigma_1_lo = meta.query_advice(a_7, -1);
+            let w_7_lo = meta.query_advice(a_8, -1);
+            let w_16_lo = meta.query_advice(a_1, -1);
+
+            let sigma_0_hi = meta.query_advice(a_6, 0);
+            let sigma_1_hi = meta.query_advice(a_7, 0);
+            let w_7_hi = meta.query_advice(a_8, 0);
+            let w_16_hi = meta.query_advice(a_1, 0);
+
+            let word = meta.query_advice(a_5, 0);
+            let carry = meta.query_advice(a_9, 0);
+
+            Gate::s_word(
+                s_word, sigma_0_lo, sigma_1_lo, w_7_lo, w_16_lo, sigma_0_hi, sigma_1_hi, w_7_hi,
+                w_16_hi, word, carry,
+            )
+            .0
+        });
+
+        // s22
+        meta.create_gate(|meta| {
+            let s22 = meta.query_fixed(s22, 0);
+            let dense_0 = meta.query_advice(a_3, 0);
+            let spread_0 = meta.query_advice(a_4, 0);
+            let dense_1 = meta.query_advice(a_5, 0);
+            let spread_1 = meta.query_advice(a_6, 0);
+
+            Gate::s22(s22, dense_0, spread_0, dense_1, spread_1).0
+        });
+
+        // s23
+        meta.create_gate(|meta| {
+            let s23 = meta.query_fixed(s22, 0);
+            let dense_0 = meta.query_advice(a_3, 0);
+            let spread_0 = meta.query_advice(a_4, 0);
+            let dense_1 = meta.query_advice(a_5, 0);
+            let spread_1 = meta.query_advice(a_6, 0);
+
+            Gate::s23(s23, dense_0, spread_0, dense_1, spread_1).0
+        });
+
+        // sigma_0 v1 on W_1 to W_13
+        // (3, 4, 11, 14)-bit chunks
+        meta.create_gate(|meta| {
+            Gate::s_lower_sigma_0(
+                meta.query_fixed(s_lower_sigma_0, 0), // s_lower_sigma_0
+                meta.query_advice(a_2, -1),           // spread_r0_even
+                meta.query_advice(a_2, 0),            // spread_r0_odd
+                meta.query_advice(a_2, 1),            // spread_r1_even
+                meta.query_advice(a_3, 0),            // spread_r1_odd
+                meta.query_advice(a_6, 1),            // spread_a
+                meta.query_advice(a_4, -1),           // spread_b_lo
+                meta.query_advice(a_6, -1),           // spread_b_hi
+                meta.query_advice(a_4, 0),            // spread_c
+                meta.query_advice(a_5, 0),            // spread_d
+            )
+            .0
+        });
+
+        // sigma_0 v2 on W_14 to W_48
+        // (3, 4, 3, 7, 1, 1, 13)-bit chunks
+        meta.create_gate(|meta| {
+            Gate::s_lower_sigma_0_v2(
+                meta.query_fixed(s_lower_sigma_0_v2, 0), // s_lower_sigma_0_v2
+                meta.query_advice(a_2, -1),              // spread_r0_even
+                meta.query_advice(a_2, 0),               // spread_r0_odd
+                meta.query_advice(a_2, 1),               // spread_r1_even
+                meta.query_advice(a_3, 0),               // spread_r1_odd
+                meta.query_advice(a_6, -1),              // spread_a
+                meta.query_advice(a_4, -1),              // spread_b_lo
+                meta.query_advice(a_4, 1),               // spread_b_hi
+                meta.query_advice(a_6, 1),               // spread_c
+                meta.query_advice(a_4, 0),               // spread_d
+                meta.query_advice(a_7, -1),              // spread_e
+                meta.query_advice(a_7, 1),               // spread_f
+                meta.query_advice(a_5, 0),               // spread_g
+            )
+            .0
+        });
+
+        // sigma_1 v2 on W_14 to W_48
+        // (3, 4, 3, 7, 1, 1, 13)-bit chunks
+        meta.create_gate(|meta| {
+            Gate::s_lower_sigma_1_v2(
+                meta.query_fixed(s_lower_sigma_1_v2, 0), // s_lower_sigma_1_v2
+                meta.query_advice(a_2, -1),              // spread_r0_even
+                meta.query_advice(a_2, 0),               // spread_r0_odd
+                meta.query_advice(a_2, 1),               // spread_r1_even
+                meta.query_advice(a_3, 0),               // spread_r1_odd
+                meta.query_advice(a_6, -1),              // spread_a
+                meta.query_advice(a_4, -1),              // spread_b_lo
+                meta.query_advice(a_4, 1),               // spread_b_hi
+                meta.query_advice(a_6, 1),               // spread_c
+                meta.query_advice(a_4, 0),               // spread_d
+                meta.query_advice(a_7, -1),              // spread_e
+                meta.query_advice(a_7, 1),               // spread_f
+                meta.query_advice(a_5, 0),               // spread_g
+            )
+            .0
+        });
+
+        // sigma_1 v1 on W_49 to W_61
+        // (10, 7, 2, 13)-bit chunks
+        meta.create_gate(|meta| {
+            Gate::s_lower_sigma_1(
+                meta.query_fixed(s_lower_sigma_1, 0), // s_lower_sigma_1
+                meta.query_advice(a_2, -1),           // spread_r0_even
+                meta.query_advice(a_2, 0),            // spread_r0_odd
+                meta.query_advice(a_2, 1),            // spread_r1_even
+                meta.query_advice(a_3, 0),            // spread_r1_odd
+                meta.query_advice(a_4, 0),            // spread_a
+                meta.query_advice(a_4, -1),           // spread_b_lo
+                meta.query_advice(a_6, -1),           // spread_b_mid
+                meta.query_advice(a_4, 1),            // spread_b_hi
+                meta.query_advice(a_6, 1),            // spread_c
+                meta.query_advice(a_5, 0),            // spread_d
+            )
+            .0
+        });
 
         MessageScheduler {
             lookup,
@@ -91,6 +285,13 @@ impl MessageScheduler {
             s_decompose_1,
             s_decompose_2,
             s_decompose_3,
+            s_lower_sigma_0,
+            s_lower_sigma_1,
+            s_lower_sigma_0_v2,
+            s_lower_sigma_1_v2,
+            s_reduce,
+            s22,
+            s23,
         }
     }
 
@@ -202,6 +403,21 @@ impl MessageScheduler {
                     value: input[i].value,
                 });
             }
+
+            // sigma_0 v1 on W_1 to W_13
+            // (3, 4, 11, 14)-bit chunks
+            for i in 1..14 {}
+
+            // sigma_0 v2 and sigma_1 v2 on W_14 to W_48
+            // (3, 4, 3, 7, 1, 1, 13)-bit chunks
+            for i in 14..49 {}
+
+            // sigma_1 v1 on W_49 to W_61
+            // (10, 7, 2, 13)-bit chunks
+            for i in 49..62 {}
+
+            // s_word
+            for i in 17..64 {}
 
             Ok(())
         })?;
